@@ -1,0 +1,630 @@
+<!--
+ Copyright (c) 2016-19 Five9, Inc. The content presented herein may not, under any
+ circumstances, be reproduced in whole or in any part or form without written
+ permission from Five9, Inc.
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href='https://www.five9.com/favicon.ico' rel='shortcut icon'>
+    <title>Five9 CRM SDK Sample</title>
+
+    <link rel="stylesheet" href="//maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous">
+    <link rel="stylesheet" href="//maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap-theme.min.css" integrity="sha384-rHyoN1iRsVXV4nD0JutlnGaslCJuC7uwjduW9SVrLvRYooPp2bWYgmgJQIXwl/Sp" crossorigin="anonymous">
+
+    <script src="//code.jquery.com/jquery-3.1.0.min.js" integrity="sha256-cCueBR6CsyA4/9szpPfrX3s49M9vUU5BgtiJj06wt/s=" crossorigin="anonymous"></script>
+    <script src="//maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js" integrity="sha384-Tc5IQib027qvyjSMfHjOMaLkfuWVxZxUPnCJA7l2mCWNIpG9mGCD8wGNIcPD7Txa" crossorigin="anonymous"></script>
+
+    <!-- Five9 CRM SDK library -->
+    <script src="https://app.five9.com/dev/sdk/crm/latest/five9.crm.sdk.js" type="text/javascript"></script>
+
+    <script type="text/javascript">
+
+        var crmApi = {};
+        var interactionApi = {};
+        var callsCount = 0;
+        var currentInteraction = {};
+
+        $(document).ready(function() {
+            $('#clicktodial').on('click', doClickToDial);
+            $('#number').on('keypress', function(e) {
+                if (e.keyCode === 13) {
+                    e.preventDefault();
+                    doClickToDial();
+                }
+            });
+            $('#objectvisited').on('click', doObjectVisited);
+            $('#suggestednumbers').on('click', doSuggestedNumbers);
+            $('#setdisposition').on('click', doSetDisposition);
+            $('#pauserecording').on('click', doPauseRecording);
+            $('#resumerecording').on('click', doResumeRecording);
+            $('#senddtmf').on('click', doSendDTMF);
+
+            crmApi = window.Five9.CrmSdk.crmApi();
+            interactionApi = window.Five9.CrmSdk.interactionApi();
+
+            // register for interaction events
+            interactionApi.subscribe({
+                callStarted: function (params) {
+                    console.debug('crm_sdk', 'callStarted', params);
+                    setLastEvent('interactionApi.callStarted: ' + JSON.stringify(params));
+                    currentInteraction = params;
+                    interactionApi.getDispositions({interactionType: 'Call', interactionId: params.callData.interactionId}).then(function (dispList) {
+                        setLastEvent('interactionApi.getDispositions: ' + JSON.stringify(dispList));
+
+                        // clear existing list
+                        $('#dispositions').find('option').remove();
+
+                        $.each(dispList, function (i, item) {
+                            $('#dispositions').append($('<option>', {
+                                value: item.id,
+                                text : item.name
+                            }));
+                        });
+                    });
+                    getPrompts().then(function (prompts) {
+                        setLastEvent('getPrompts: ' + JSON.stringify(prompts));
+                    });
+                }});
+            interactionApi.subscribeWsEvent({
+                4: function (params) {
+                    console.debug('crm_sdk', 'WebSocket eventId 4 received', params);
+                    setLastEvent('interactionApi.event4: ' + JSON.stringify(params));
+                }
+            })
+            // register CRM API event callbacks
+            crmApi.registerApi({
+                bringAppToFront: function (params) {
+                    setLastEvent('crmApi.bringAppToFront: ' + JSON.stringify(params));
+                },
+                getAdtConfig: function (params) {
+                    setLastEvent('getAdtConfig');
+
+                    getMetaData();
+
+                    var config = {
+                        providerName: 'CRM ADT+ adapter',
+                        myCallsTodayEnabled: true,
+                        myChatsTodayEnabled: true,
+                        myEmailsTodayEnabled: false,
+                        showContactInfo: false
+                    };
+                    return Promise.resolve(config);
+                },
+                search: function (params) {
+                    return new Promise(function (resolve, reject) {
+
+                        setLastEvent('crmApi.search: ' + JSON.stringify(params));
+
+                        // TODO implement CRM call counter
+                        callsCount++;
+
+                        resolve(getSearchResult());
+                    });
+                },
+                saveLog: function (params) {
+                    setLastEvent('crmApi.saveCallLog: ' + JSON.stringify(params));
+                },
+                screenPop: function (params) {
+                    setLastEvent('crmApi.screenPop: ' + JSON.stringify(params));
+                },
+                getTodayCallsCount: function (params) {
+                    setLastEvent('crmApi.getTodayCallsCount');
+                    return callsCount;
+                },
+                getTodayChatsCount: function (params) {
+                    setLastEvent('crmApi.getTodayChatsCount');
+                    return 0;
+                },
+                openMyCallsToday: function (params) {
+                    setLastEvent('crmApi.openMyCallsToday');
+                },
+                openMyChatsToday: function (params) {
+                    setLastEvent('crmApi.openMyChatsToday');
+                },
+                enableClickToDial: function (params) {
+                    setLastEvent('crmApi.enableClickToDial');
+                    $('#clicktodial').prop('disabled', false);
+                },
+                disableClickToDial: function (params) {
+                    setLastEvent('crmApi.disableClickToDial');
+                    $('#clicktodial').prop('disabled', true);
+                }
+            });
+
+            window.Five9.CrmSdk.customComponentsApi().registerCustomComponents({
+                template: '<adt-components></adt-components>',
+                callbacks: {
+                    callTabInputCallback: function(params) {
+                        console.debug({
+                            callee: arguments.callee.name,
+                            data: params
+                        });
+                    },
+
+                    callTabYesCallback: function(params) {
+                        console.debug({
+                            callee: arguments.callee.name,
+                            data: params
+                        });
+                    },
+                    callTabNoCallback: function(params) {
+                        console.debug({
+                            callee: arguments.callee.name,
+                            data: params
+                        });
+                    },
+                    callDetailsInputCallback: function(params) {
+                        console.debug({
+                            callee: arguments.callee.name,
+                            data: params
+                        });
+                    },
+                    callDetailsButtonCallback: function(params) {
+                        console.debug({
+                            callee: arguments.callee.name,
+                            data: params
+                        });
+                    }
+                }
+            });
+        });
+
+        /**
+         * Local CRM event triggers
+         */
+
+        function getCrmObject() {
+            return {
+                // TODO include CRM-specific contact details
+                id: $('#ov-id').val(),
+                name: $('#ov-name').val(),
+                type: 'Contact',
+                label: 'Contact',
+                isWho: true,
+                isWhat: false
+            };
+        }
+
+        function getSearchResult() {
+            var crmobj = getCrmObject();
+            return {
+                crmObjects: [
+                    // TODO one or more search results
+                    crmobj
+                ],
+                // TODO single screen pop object
+                screenPopObject: crmobj
+            };
+        }
+
+        function doObjectVisited() {
+            var number = $('#number').val();
+
+            if (!!number) {
+                var objectVisitedData = { crmObject: getCrmObject() };
+                crmApi.objectVisited(objectVisitedData);
+
+                setStatus('Object Visited event sent');
+            } else {
+                setStatus('Phone Number required!', true);
+            }
+        }
+
+        function doClickToDial() {
+            var number = $('#number').val();
+            var campaign = $('#campaigns').find(':selected').html();
+
+            if (!!number) {
+                var click2DialData = { click2DialData: {
+                        clickToDialNumber: number,
+                        screenpopC2DSearch: true,
+                        // Five9 campaign name
+                        preselectedCampaignName: campaign,
+                        crmObject: getCrmObject()
+                    }};
+                crmApi.click2dial(click2DialData);
+
+                setStatus('Click to Dial event sent');
+            } else {
+                setStatus('Phone Number required!', true);
+            }
+        }
+
+        function doSuggestedNumbers() {
+            var number1 = $('#number').val();
+            var number2 = $('#sn-number2').val();
+            var number3 = $('#sn-number3').val();
+            var campaign = $('#campaigns').find(':selected').html();
+
+            if (!!number1) {
+                var suggestedNumbersInfo = {
+                    suggestedNumbers: [  ]
+                };
+
+                var crmObject = getCrmObject();
+                // TODO include CRM-specific phone number
+                [ number1, number2, number3 ].forEach(function(number) {
+                    var crmC2DInfo = {
+                        clickToDialNumber: number,
+                        screenpopC2DSearch: true,
+                        // Five9 campaign name
+                        preselectedCampaignName: campaign,
+                        // optional, send if screenpopC2DSearch = false
+                        crmObject: crmObject
+                    };
+                    suggestedNumbersInfo.suggestedNumbers.push(crmC2DInfo);
+                }, this);
+
+                crmApi.suggestedNumbers(suggestedNumbersInfo);
+
+                setStatus('Suggested Numbers event sent');
+            } else {
+                setStatus('Phone Number required!', true);
+            }
+        }
+
+        function doSetDisposition() {
+            var dispositionId = $('#dispositions').val();
+
+            if (!!dispositionId) {
+                interactionApi.setDisposition({
+                    interactionType: 'Call',
+                    interactionId: currentInteraction.callData.interactionId,
+                    dispositionId: dispositionId
+                });
+
+                setStatus('Set Disposition event sent');
+            } else {
+                setStatus('Disposition required!', true);
+            }
+        }
+
+        function doPauseRecording() {
+            if (currentInteraction && currentInteraction.callData && currentInteraction.callData.interactionId) {
+                stopRecording(currentInteraction.callData.interactionId);
+                setStatus('Pause Recording sent');
+            }
+        }
+
+        function doResumeRecording() {
+            if (currentInteraction && currentInteraction.callData && currentInteraction.callData.interactionId) {
+                startRecording(currentInteraction.callData.interactionId);
+                setStatus('Resume Recording sent');
+            }
+        }
+
+        function doSendDTMF() {
+            var dtmfdigits = $('#dtmfdigits').val().split('');
+            var promptsToPlay = [];
+
+            while (true) {
+                var digit = dtmfdigits.shift();
+                if (typeof digit === "undefined") break;
+                if (/[0-9*#]/.test(digit)) {
+                    // special case: * = star, # = pound in prompt names
+                    const name = "DTMF-" + digit.replace('*','star').replace('#', 'pound');
+                    var prompt = $.grep(prompts, function(el) {
+                        return el.name ===  name;
+                    });
+                    if (prompt.length === 1) {
+                        promptsToPlay.push(prompt[0]);
+                    }
+                }
+            }
+
+            if (promptsToPlay.length > 0) {
+                serializePrompts(promptsToPlay);
+            }
+        }
+
+        function serializePrompts(promptsToPlay) {
+            if (promptsToPlay.length > 0) {
+                var prompt = promptsToPlay.shift();
+                playPrompt(currentInteraction.callData.interactionId, prompt.id);
+
+                window.setTimeout(serializePrompts, prompt.duration + 500, promptsToPlay);
+            }
+        }
+
+        function doClearLog () {
+            var eventdiv = $("#last-event");
+            eventdiv.html('');
+        }
+
+        function setLastEvent (msg) {
+            console.log(msg);
+            var eventdiv = $("#last-event");
+            eventdiv.prepend(msg+'\r\n\r\n');
+        }
+
+        function setStatus (msg, iserror) {
+            var statusdiv = $("#status-span");
+            statusdiv.attr('style', (iserror ? 'color: red' : 'color: green'));
+            statusdiv.html(msg);
+        }
+
+        // Agent REST API helper functions
+
+        var metadata, prompts;
+
+        function getMetaData() {
+            var deferred = new $.Deferred();
+
+            if (interactionApi) {
+                interactionApi.executeRestApi({"path": "/appsvcs/rs/svc/auth/metadata", "method": "GET", "payload": null})
+                    .then(function (result) {
+                        if (result.status === 200) {
+                            metadata = JSON.parse(result.response);
+                            deferred.resolve(metadata);                
+                        } else {
+                            metadata = null;
+                            var response = JSON.parse(result.response);
+                            deferred.reject(response.five9ExceptionDetail);
+                        }
+                    }, function (result) {
+                        metadata = null;
+                        deferred.reject(result.error);                
+                    });
+            } else {
+              $.ajax({
+                  url: 'https://app.five9.com/appsvcs/rs/svc/auth/metadata',
+                  dataType: 'json',
+                  xhrFields: {
+                      withCredentials: true
+                  },
+                  complete: function(jqXHR, status) {
+                      try {
+                          var response = JSON.parse(jqXHR.responseText);
+                          if (status === 'success') {
+                              metadata = response;
+                              deferred.resolve(metadata);
+                          } else {
+                              deferred.reject(response.five9ExceptionDetail);
+                          }
+                      } catch(e) {}
+                  }
+              });
+            }
+            return deferred.promise();
+        }
+
+        function stopRecording(callId) {
+            var deferred = new $.Deferred();
+            
+            if (interactionApi) {
+                interactionApi.executeRestApi({"path": "/appsvcs/rs/svc/agents/" + metadata.userId + "/interactions/calls/" + callId + "/stop_recording", "method": "PUT", "payload": null})
+                    .then(function (result) {
+                        deferred.resolve(result);                
+                    }, function (result) {
+                        deferred.reject(result.five9ExceptionDetail);                
+                    });
+            } else {
+                $.ajax({
+                    url: 'https://'+metadata.metadata.dataCenters[0].apiUrls[0].host+'/appsvcs/rs/svc/agents/'
+                        +metadata.userId+'/interactions/calls/'+callId+'/stop_recording',
+                    method: 'PUT',
+                    dataType: 'json',
+                    xhrFields: {
+                        withCredentials: true
+                    },
+                    complete: function(jqXHR, status) {
+                        try {
+                            var response = JSON.parse(jqXHR.responseText);
+                            if (status === 'success') {
+                                deferred.resolve(response);
+    
+                            } else {
+                                deferred.reject(response.five9ExceptionDetail);
+                            }
+                        } catch(e) {}
+                    }
+                });
+            }
+            return deferred.promise();
+        }
+
+        function startRecording(callId) {
+            var deferred = new $.Deferred();
+
+            if (interactionApi) {
+                interactionApi.executeRestApi({"path": "/appsvcs/rs/svc/agents/" + metadata.userId + "/interactions/calls/" + callId + "/start_recording", "method": "PUT", "payload": null})
+                    .then(function (result) {
+                        deferred.resolve(result);                
+                    }, function (result) {
+                        deferred.reject(result.five9ExceptionDetail);                
+                    });
+            } else {
+                $.ajax({
+                    url: 'https://'+metadata.metadata.dataCenters[0].apiUrls[0].host+'/appsvcs/rs/svc/agents/'
+                        +metadata.userId+'/interactions/calls/'+callId+'/start_recording',
+                    method: 'PUT',
+                    dataType: 'json',
+                    xhrFields: {
+                        withCredentials: true
+                    },
+                    complete: function(jqXHR, status) {
+                        try {
+                            var response = JSON.parse(jqXHR.responseText);
+                            if (status === 'success') {
+                                deferred.resolve(response);
+    
+                            } else {
+                                deferred.reject(response.five9ExceptionDetail);
+                            }
+                        } catch(e) {}
+                    }
+                });
+            }
+            return deferred.promise();
+        }
+
+        function playPrompt(callId, promptid) {
+            var deferred = new $.Deferred();
+
+            $.ajax({
+                url: 'https://'+metadata.metadata.dataCenters[0].apiUrls[0].host+'/appsvcs/rs/svc/agents/'
+                    +metadata.userId+'/interactions/calls/'+callId+'/audio/player/play_prompt',
+                method: 'PUT',
+                data: JSON.stringify({ value: promptid }),
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                dataType: 'json',
+                xhrFields: {
+                    withCredentials: true
+                },
+                complete: function(jqXHR, status) {
+                    try {
+                        var response = JSON.parse(jqXHR.responseText);
+                        if (status === 'success') {
+                            deferred.resolve(response);
+
+                        } else {
+                            deferred.reject(response.five9ExceptionDetail);
+                        }
+                    } catch(e) {}
+                }
+            });
+
+            return deferred.promise();
+        }
+
+        function getPrompts() {
+            var deferred = new $.Deferred();
+
+            $.ajax({
+                url: 'https://'+metadata.metadata.dataCenters[0].apiUrls[0].host+'/appsvcs/rs/svc/agents/'
+                    +metadata.userId+'/prompts',
+                dataType: 'json',
+                xhrFields: {
+                    withCredentials: true
+                },
+                complete: function(jqXHR, status) {
+                    try {
+                        var response = JSON.parse(jqXHR.responseText);
+                        if (status === 'success') {
+                            prompts = response;
+                            deferred.resolve(prompts);
+                         } else {
+                            deferred.reject(response.five9ExceptionDetail);
+                        }
+                    } catch(e) {}
+                }
+            });
+
+            return deferred.promise();
+        }
+
+    </script>
+</head>
+<body>
+    <div id="main-panel" class="container" style="padding: 5px">
+        <div class="col-sm-6 col-md-6 col-lg-6">
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <h3 class="panel-title">Agent Desktop Toolkit Plus</h3>
+                </div>
+                <!-- Five9 Agent Desktop Toolkit Plus Adapter-->
+                <iframe id="adt" src="https://app.five9.com/clients/integrations/adt.main.html?f9crmapi=true&f9verticalthreshold=500px"
+                        sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms"
+                        width="100%" height="600" style="border-width: 0;"></iframe>
+            </div>
+        </div>
+        <div class="col-sm-6 col-md-6 col-lg-6">
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <h3 class="panel-title">CRM SDK Functions</h3>
+                </div>
+                <div class="panel-body">
+                    <form class="col-sm-6 col-md-6 col-lg-6">
+                        <div class="form-group">
+                            <label for="number" class="control-label">Phone Number</label>
+                            <input type="text" id="number" class="form-control" maxlength="15" placeholder="Enter phone number...">
+
+                            <label for="campaigns" class="control-label">Campaign</label>
+                            <select id="campaigns" class="form-control">
+                                <!-- TODO include domain-specific campaign names -->
+                                <option value="Inbound">Inbound</option>
+                                <option value="Outbound" selected="selected">Outbound</option>
+                                <option value="Alpaca_Master_OB - Manual">Alpaca_Master_OB - Manual</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                                <button type="button" id="clicktodial" class="btn btn-primary" disabled="disabled">Click2Dial</button>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="ov-id" class="control-label">Contact ID</label>
+                            <input type="text" id="ov-id" class="form-control" aria-describedby="status-span" placeholder="Enter id...">
+
+                            <label for="ov-name" class="control-label">Contact Name</label>
+                            <input type="text" id="ov-name" class="form-control" aria-describedby="status-span" placeholder="Enter name...">
+                        </div>
+                        <div class="form-group">
+                            <button type="button" id="objectvisited" class="btn btn-primary">Object Visited</button>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="pauserecording" class="control-label">Call Recording</label>
+                            <br>
+                            <button type="button" id="pauserecording" class="btn btn-danger">Pause</button>
+                            <button type="button" id="resumerecording" class="btn btn-success">Resume</button>
+                        </div>
+                    </form>
+                    <form class="col-sm-6 col-md-6 col-lg-6">
+                        <div class="form-group">
+                            <label for="sn-number2" class="control-label">Phone Number 1</label>
+                            <input type="text" id="sn-number2" class="form-control" maxlength="15" placeholder="Enter number 2...">
+
+                            <label for="sn-number3" class="control-label">Phone Number 2</label>
+                            <input type="text" id="sn-number3" class="form-control" maxlength="15" placeholder="Enter number 3...">
+                        </div>
+                        <div class="form-group">
+                            <button type="button" id="suggestednumbers" class="btn btn-primary">Suggested Numbers</button>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="dispositions" class="control-label">Dispositions</label>
+                            <select id="dispositions" class="form-control">
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <button type="button" id="setdisposition" class="btn btn-primary">Set Disposition</button>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="dtmfdigits" class="control-label">Send DTMF</label>
+                            <input type="text" id="dtmfdigits" class="form-control" placeholder="Enter DTMF...">
+                        </div>
+                        <div class="form-group">
+                            <button type="button" id="senddtmf" class="btn btn-primary">Send DTMF</button>
+                        </div>
+                    </form>
+                </div>
+                <div class="panel-footer">
+                    <span id="status-span"></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <div class="col-sm-12 col-md-12 col-lg-12">
+                <div class="panel panel-default">
+                    <div class="panel-heading clearfix">
+                        <h3 class="panel-title pull-left">Event Log</h3>
+                        <button type="button" id="clearlog" class="btn btn-default pull-right" onclick="doClearLog()">Clear Log</button>
+                    </div>
+                    <textarea id="last-event" class="form-control" rows="10"></textarea>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
